@@ -18,9 +18,8 @@ workflows:
       - name: Package unsigned IPA
         script: |
           mkdir -p build/ios/ipa/Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
-          cd Payload && zip -q -r ../vm6_flow_reader.ipa Runner.app && cd ..
-          mv vm6_flow_reader.ipa build/ios/ipa/vm6_flow_reader.ipa
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa/Payload && zip -q -r -y ../vm6_flow_reader.ipa Runner.app && cd ../../..
           echo "IPA: $(ls -lh build/ios/ipa/vm6_flow_reader.ipa)"
     artifacts:
       - build/ios/ipa/*.ipa
