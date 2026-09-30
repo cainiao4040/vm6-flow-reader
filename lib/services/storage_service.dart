@@ -39,7 +39,7 @@ class StorageService {
     final dbPath = join(dir.path, 'meter_reader.db');
     return openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE meters (
@@ -51,6 +51,7 @@ class StorageService {
             model TEXT,
             status TEXT,
             metadata_json TEXT,
+            note TEXT,
             last_seen_at TEXT,
             created_at TEXT,
             updated_at TEXT
@@ -106,6 +107,13 @@ class StorageService {
         await db.execute(
             'CREATE INDEX IF NOT EXISTS idx_readings_time ON readings(recorded_at)');
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // v1 -> v2：meters 增加 note（人工备注）列。
+        // 已装旧版的手机不会丢数据，只是补一列。
+        if (oldVersion < 2) {
+          await db.execute('ALTER TABLE meters ADD COLUMN note TEXT');
+        }
+      },
     );
   }
 
@@ -129,6 +137,8 @@ class StorageService {
       'model': device.model,
       'status': device.status ?? 'active',
       'metadata_json': device.metadataJson,
+      // 调用方若不清楚备注（如只更新系数），保留库里已有的备注，不要清空
+      'note': device.note ?? (existing.isEmpty ? null : existing.first['note']),
       'last_seen_at': device.lastSeenAt ?? now,
       'updated_at': now,
     };
@@ -169,6 +179,46 @@ class StorageService {
   Future<int> deleteMeter(int id) async {
     final db = await database;
     return db.delete('meters', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ---- 人工备注 / 名称 ----
+
+  /// 修改设备的显示名称与人工备注。只更新传入的字段（null 表示不动）。
+  Future<void> updateMeterInfo(int meterId,
+      {String? displayName, String? note}) async {
+    final db = await database;
+    final values = <String, dynamic>{
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+    if (displayName != null) values['display_name'] = displayName;
+    if (note != null) values['note'] = note;
+    await db.update('meters', values, where: 'id = ?', whereArgs: [meterId]);
+  }
+
+  /// 按序列号写备注（扫描页/已存设备没有 meters.id 时用）
+  Future<void> updateMeterNoteBySerial(String serialNumber, String note) async {
+    final db = await database;
+    await db.update(
+      'meters',
+      {'note': note, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'serial_number = ?',
+      whereArgs: [serialNumber],
+    );
+  }
+
+  /// 序列号 -> 备注，供列表页做展示用
+  Future<Map<String, String>> getMeterNotes() async {
+    final db = await database;
+    final rows = await db.query('meters', columns: ['serial_number', 'note']);
+    final out = <String, String>{};
+    for (final r in rows) {
+      final serial = r['serial_number'] as String?;
+      final note = r['note'] as String?;
+      if (serial != null && note != null && note.trim().isNotEmpty) {
+        out[serial] = note;
+      }
+    }
+    return out;
   }
 
   // ---- 流量系数（存 meters.metadata_json） ----

@@ -5,6 +5,7 @@ import '../models/live_metrics.dart';
 import '../services/ble_service.dart';
 import '../services/storage_service.dart';
 import 'coefficient_screen.dart';
+import 'devices_screen.dart';
 import 'records_screen.dart';
 import 'scan_screen.dart';
 import 'settings_screen.dart';
@@ -80,6 +81,12 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('VM6 流量计'),
         actions: [
+          IconButton(
+            tooltip: '设备与备注',
+            icon: const Icon(Icons.edit_note_outlined),
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const DevicesScreen())),
+          ),
           IconButton(
             tooltip: '设置',
             icon: const Icon(Icons.settings_outlined),

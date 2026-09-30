@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../models/meter_device.dart';
 import '../services/ble_service.dart';
 import '../services/storage_service.dart';
 
@@ -100,6 +101,86 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
+  /// 点设备名称即可先写人工备注（不必先连接）。
+  Future<void> _editNote(DiscoveredDevice d) async {
+    final existing = await _storage.getMeterBySerial(d.id);
+    if (!mounted) return;
+
+    final defaultName = (existing != null && existing.displayName.isNotEmpty)
+        ? existing.displayName
+        : (d.name.isEmpty ? d.id : d.name);
+    final nameCtrl = TextEditingController(text: defaultName);
+    final noteCtrl = TextEditingController(text: existing?.note ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('设备备注'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('设备标识：${d.id}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(height: 14),
+              const Text('显示名称', style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                    hintText: '例如：1号井流量计',
+                    border: OutlineInputBorder(),
+                    isDense: true),
+              ),
+              const SizedBox(height: 16),
+              const Text('人工备注', style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: noteCtrl,
+                minLines: 3,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                    hintText: '例如：王家坡计量间，负责人王工 138xxxx',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (saved != true) return;
+
+    final name = nameCtrl.text.trim().isEmpty ? defaultName : nameCtrl.text.trim();
+    final note = noteCtrl.text.trim();
+    final id = existing?.id;
+    if (existing == null || id == null) {
+      await _storage.upsertMeter(MeterDevice(
+        serialNumber: d.id,
+        displayName: name,
+        type: 'flow-meter',
+        model: 'VM6',
+        status: 'seen',
+        note: note,
+        lastSeenAt: DateTime.now().toIso8601String(),
+      ));
+    } else {
+      await _storage.updateMeterInfo(id, displayName: name, note: note);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('已保存「$name」的备注')));
+  }
+
   Widget _header() {
     final connecting = _connectingId;
     final shown = _visible.length;
@@ -139,7 +220,7 @@ class _ScanScreenState extends State<ScanScreen> {
               const SizedBox(width: 4),
               const Expanded(
                 child: Text(
-                  '只看表具（关闭可显示附近全部蓝牙设备）',
+                  '只看表具（关闭可显示全部蓝牙设备）· 点设备名可写备注',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
@@ -217,6 +298,7 @@ class _ScanScreenState extends State<ScanScreen> {
                   final busy = _connectingId != null;
 
                   return ListTile(
+                    onTap: busy ? null : () => _editNote(d),
                     leading: Icon(
                       isMeter ? Icons.speed : Icons.bluetooth_searching,
                       color: isMeter ? Colors.teal : null,

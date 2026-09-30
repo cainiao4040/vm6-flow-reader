@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../models/meter_device.dart';
 import '../models/reading_record.dart';
 import '../services/storage_service.dart';
 
@@ -15,6 +16,7 @@ class RecordsScreen extends StatefulWidget {
 class _RecordsScreenState extends State<RecordsScreen> {
   final StorageService _storage = StorageService.instance;
   List<ReadingRecord> _records = [];
+  Map<int, MeterDevice> _metersById = {};
   bool _loading = true;
   String _filter = '全部';
 
@@ -42,9 +44,14 @@ class _RecordsScreenState extends State<RecordsScreen> {
     } else {
       list = await _storage.getReadings(limit: 500);
     }
+    final meters = await _storage.getAllMeters();
     if (mounted) {
       setState(() {
         _records = list;
+        _metersById = {
+          for (final m in meters)
+            if (m.id != null) m.id!: m,
+        };
         _loading = false;
       });
     }
@@ -92,6 +99,12 @@ class _RecordsScreenState extends State<RecordsScreen> {
                         itemBuilder: (context, i) {
                           final r = _records[i];
                           final time = r.recordedAt ?? r.receivedAt;
+                          final meter = _metersById[r.meterId];
+                          final meterLabel = meter == null
+                              ? null
+                              : (meter.hasNote
+                                  ? '${meter.displayName} · ${meter.note}'
+                                  : meter.displayName);
                           return Dismissible(
                             key: ValueKey('${r.id}_$i'),
                             direction: DismissDirection.endToStart,
@@ -110,12 +123,29 @@ class _RecordsScreenState extends State<RecordsScreen> {
                               leading: const Icon(Icons.water_drop),
                               title: Text(
                                   '流量 ${r.flowRate.toStringAsFixed(4)} ${r.unit}'),
-                              subtitle: Text(
-                                '${time == null ? '-' : DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.parse(time))}'
-                                '${r.temperature != null ? '  温度 ${r.temperature!.toStringAsFixed(2)}℃' : ''}'
-                                '${r.pressure != null ? '  压力 ${r.pressure!.toStringAsFixed(2)}kPa' : ''}',
-                                style: const TextStyle(fontSize: 12),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${time == null ? '-' : DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.parse(time))}'
+                                    '${r.temperature != null ? '  温度 ${r.temperature!.toStringAsFixed(2)}℃' : ''}'
+                                    '${r.pressure != null ? '  压力 ${r.pressure!.toStringAsFixed(2)}kPa' : ''}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  if (meterLabel != null &&
+                                      meterLabel.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        meterLabel,
+                                        style: const TextStyle(
+                                            fontSize: 11, color: Colors.grey),
+                                      ),
+                                    ),
+                                ],
                               ),
+                              isThreeLine:
+                                  meterLabel != null && meterLabel.isNotEmpty,
                             ),
                           );
                         },
