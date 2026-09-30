@@ -21,7 +21,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final BleService _ble = BleService.instance;
   final StorageService _storage = StorageService.instance;
 
-  LiveMetrics? _latest;
+  LiveMetrics? _latest; // 仅接受 0x47 实时帧
+  double? _coefficient; // 0x47 与 0x03 都会更新
   String _statusText = '未连接';
   final List<String> _logs = [];
   String? _coefficientHint;
@@ -31,11 +32,18 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _ble.initStatusListener();
     _ble.liveDataStream.listen((m) {
-      if (m.instantFlow > 0 ||
-          (m.cumulativeFlow ?? 0) > 0 ||
-          (m.temperature ?? 0) != 0) {
-        setState(() => _latest = m);
-      }
+      if (!mounted) return;
+      setState(() {
+        if (m.isRealtime) {
+          // 0x47：五个字段齐全，整帧替换
+          _latest = m;
+          _coefficient = m.coefficient ?? _coefficient;
+        } else {
+          // 0x03 读系数帧：只有 coefficient 有效。绝不能覆盖 _latest，
+          // 否则占位的 instantFlow=0 会把「瞬时流量」显示成 0.0000。
+          _coefficient = m.coefficient ?? _coefficient;
+        }
+      });
     });
     _ble.logStream.listen((line) {
       if (_logs.length > 200) _logs.removeAt(0);
@@ -148,9 +156,9 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(child: _metric('压力', m?.pressure, 'MPa')),
+                Expanded(child: _metric('压力', m?.pressure, 'kPa')),
                 Expanded(child: _metric('温度', m?.temperature, '℃')),
-                Expanded(child: _metric('系数 K', m?.coefficient, '')),
+                Expanded(child: _metric('系数 K', _coefficient, '')),
               ],
             ),
             const SizedBox(height: 8),

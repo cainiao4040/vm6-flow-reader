@@ -113,7 +113,7 @@ class _RecordsScreenState extends State<RecordsScreen> {
                               subtitle: Text(
                                 '${time == null ? '-' : DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.parse(time))}'
                                 '${r.temperature != null ? '  温度 ${r.temperature!.toStringAsFixed(2)}℃' : ''}'
-                                '${r.pressure != null ? '  压力 ${r.pressure!.toStringAsFixed(4)}MPa' : ''}',
+                                '${r.pressure != null ? '  压力 ${r.pressure!.toStringAsFixed(2)}kPa' : ''}',
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ),

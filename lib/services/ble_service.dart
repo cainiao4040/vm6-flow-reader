@@ -34,6 +34,13 @@ class BleService {
   static const String kWriteUuid = '0000ffe9-0000-1000-8000-00805f9b34fb';
   static const String kNotifyUuid = '0000ffe4-0000-1000-8000-00805f9b34fb';
 
+  /// 是否为 VM6 / VMS 系列表具。
+  /// 仅用于列表置顶与标记，**不**用于过滤扫描结果。
+  static bool isVm6Device(String name) {
+    final n = name.trim().toUpperCase();
+    return n.startsWith('VM');
+  }
+
   // ---- 状态 ----
   bool _isScanning = false;
   bool _isConnected = false;
@@ -61,6 +68,15 @@ class BleService {
   // ---- 统计 ----
   int _packetCount = 0;
   int _parsedCount = 0;
+
+  /// 通知重组缓冲。
+  ///
+  /// 抓包日志（BLE调试宝_realtime_log_20260403221411.txt）里，24 字节的 0x47
+  /// 响应帧被设备拆成了两条 notify（20B + 4B）。MTU 较小或固件固定按 20 字节
+  /// 分片时，对单条 notify 调用 extractFrame 永远匹配不到完整帧，实时值会一直
+  /// 解析失败。这里跨通知累积字节，由 extractFrame 扫描出完整帧后再清空。
+  final List<int> _rxBuffer = [];
+  static const int _rxBufferLimit = 512;
 
   // ---- 流 ----
   final StreamController<LiveMetrics> _liveDataController =
@@ -120,11 +136,10 @@ class BleService {
           )
           .listen(
             (device) {
-              final name = device.name.trim();
-              if (name.toUpperCase().startsWith('VM') ||
-                  name.toUpperCase().startsWith('VMS')) {
-                _deviceController.add(device);
-              }
+              // 不对名称做过滤：安卓版就是列出全部扫描到的设备。若表具没有
+              // 广播名称，按前缀过滤会让它彻底不出现、用户无法连接。
+              // 排序与「表具」标记交给 scan_screen（BleService.isVm6Device）。
+              _deviceController.add(device);
             },
             onError: (Object e) {
               _log('扫描出错: $e');
@@ -218,6 +233,7 @@ class BleService {
       } catch (_) {}
     }
     _notifySubs.clear();
+    _rxBuffer.clear();
     try {
       await _connectionSub?.cancel();
     } catch (_) {}
@@ -339,7 +355,8 @@ class BleService {
     _packetCount++;
     _rawDataController.add(data);
 
-    // 写入回执 / 从机繁忙异常优先处理（写系数流程依赖）
+    // 写入回执 / 从机繁忙异常优先处理（写系数流程依赖）。
+    // 这两条路径要求「传入的整段恰好是一帧」，所以用原始通知而不是重组缓冲。
     _handleIncomingInternal(data);
 
     // 异常帧（func|0x80）
@@ -351,8 +368,15 @@ class BleService {
       return;
     }
 
-    final parsed = _parseResponse(data);
+    // 先并入重组缓冲，再交给 extractFrame 扫描（含 CRC 校验）
+    _rxBuffer.addAll(data);
+    if (_rxBuffer.length > _rxBufferLimit) {
+      _rxBuffer.removeRange(0, _rxBuffer.length - _rxBufferLimit);
+    }
+
+    final parsed = _parseResponse(Uint8List.fromList(_rxBuffer));
     if (parsed != null) {
+      _rxBuffer.clear();
       _parsedCount++;
       _emptyPollRounds = 0;
       _liveDataController.add(parsed);
@@ -439,6 +463,8 @@ class BleService {
 
   Future<void> _sendCommand(List<int> bytes) async {
     if (!_isConnected || _writeQc == null) return;
+    // 每条命令从干净的缓冲开始，避免上一条命令的残帧干扰本次解析
+    _rxBuffer.clear();
     _log('发送: ${A5Protocol.hex(bytes)}');
     try {
       await _ble.writeCharacteristicWithResponse(_writeQc!, value: bytes);
@@ -632,6 +658,7 @@ class BleService {
           coefficient: vals[4],
           rawHex: A5Protocol.hex(realtime),
           timestamp: DateTime.now(),
+          isRealtime: true,
         );
       }
     }
@@ -643,11 +670,13 @@ class BleService {
       if (val != null && val.isFinite) {
         _handleCoefficientReadBack(val);
         _log('解析[0x03 系数K@0x0010]: ${val.toStringAsFixed(4)}');
+        // 注意 isRealtime: false —— 这一帧只有系数有效，不能当作实时数据渲染
         return LiveMetrics(
           instantFlow: 0,
           coefficient: val,
           rawHex: A5Protocol.hex(holding),
           timestamp: DateTime.now(),
+          isRealtime: false,
         );
       }
     }

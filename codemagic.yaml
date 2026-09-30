@@ -1,29 +1,107 @@
 workflows:
-  ios-release:
-    name: iOS Release (unsigned IPA)
+  ios-unsigned-ipa:
+    name: iOS unsigned IPA (TrollStore / AppSync)
     instance_type: mac_mini_m2
     max_build_duration: 60
+
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
+
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $FLUTTER_ROOT/.pub-cache
+
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      cancel_previous_builds: true
+
     scripts:
+      - name: Toolchain info
+        script: |
+          flutter --version
+          xcodebuild -version
+          pod --version
+
       - name: Install dependencies
         script: |
           flutter pub get
-          cd ios && pod install && cd ..
-      - name: Build release framework (no codesign)
+
+      # Fast static gate - the project is known to be clean here.
+      - name: Static analysis
         script: |
+          flutter analyze
+
+      # --no-codesign produces an unsigned build/ios/iphoneos/Runner.app.
+      # Flutter runs `pod install` itself here, so no separate pod step is
+      # needed (and running `pod install` before this would fail because
+      # ios/Flutter/Generated.xcconfig does not exist yet).
+      - name: Build iOS (release, unsigned)
+        script: |
+          set -e
           flutter build ios --release --no-codesign
+          test -d build/ios/iphoneos/Runner.app || {
+            echo "::error::Runner.app was not produced"
+            exit 1
+          }
+          echo "--- app bundle ---"
+          ls -la build/ios/iphoneos/Runner.app
+          echo "--- architectures ---"
+          lipo -info build/ios/iphoneos/Runner.app/Runner
+
       - name: Package unsigned IPA
         script: |
-          mkdir -p build/ios/ipa/Payload
-          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
-          cd build/ios/ipa/Payload && zip -q -r -y ../vm6_flow_reader.ipa Runner.app && cd ../../..
-          echo "IPA: $(ls -lh build/ios/ipa/vm6_flow_reader.ipa)"
+          set -e
+          cd build/ios
+          rm -rf ipa
+          mkdir -p ipa/Payload
+          cp -R iphoneos/Runner.app ipa/Payload/Runner.app
+          chmod +x ipa/Payload/Runner.app/Runner
+          # Leave a clean, unsigned bundle for AppSync Unified / re-signing tools.
+          rm -rf ipa/Payload/Runner.app/_CodeSignature
+          cd ipa
+          zip -qry vm6_flow_reader-unsigned.ipa Payload
+          echo "unsigned IPA: $(du -h vm6_flow_reader-unsigned.ipa | cut -f1)"
+
+      - name: Ad-hoc sign and package IPA
+        script: |
+          set -e
+          cd build/ios/ipa
+          codesign --force --sign - --timestamp=none Payload/Runner.app
+          codesign --verify --verbose=2 Payload/Runner.app || true
+          zip -qry vm6_flow_reader-adhoc.ipa Payload
+          echo "ad-hoc IPA: $(du -h vm6_flow_reader-adhoc.ipa | cut -f1)"
+          ls -lh *.ipa
+
+      - name: Verify IPA contents
+        script: |
+          set -e
+          cd build/ios/ipa
+          for f in vm6_flow_reader-unsigned.ipa vm6_flow_reader-adhoc.ipa; do
+            echo "=== $f ==="
+            unzip -l "$f" | head -20
+            unzip -p "$f" Payload/Runner.app/Info.plist > /tmp/plist.xml 2>/dev/null || true
+            if [ -s /tmp/plist.xml ]; then
+              plutil -p /tmp/plist.xml 2>/dev/null | grep -E 'CFBundleIdentifier|CFBundleDisplayName|CFBundleShortVersionString|NSBluetoothAlwaysUsageDescription' || true
+            fi
+          done
+
     artifacts:
       - build/ios/ipa/*.ipa
+      - build/ios/iphoneos/Runner.app
+
     publishing:
-      email:
-        recipients:
-          - recipient@example.com
+      # No email publishing: there is no real recipient configured, and a
+      # failed publish would mark an otherwise successful build as failed.
+      scripts:
+        - name: Done
+          script: |
+            echo "IPA artifacts are available in the Codemagic build artifacts."

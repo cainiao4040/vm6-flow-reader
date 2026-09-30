@@ -205,25 +205,30 @@ class A5Protocol {
   }
 
   /// 解析 0x10 写多寄存器回执：合法回执返回 true。
-  /// 回执载荷 5B：regHi regLo cntHi cntLo（Modbus 惯例回显起始寄存器+数量）。
+  ///
+  /// 原安卓实现 `A5Protocol.extractFrame(bArr, 16) != null` 即视为收到回执，
+  /// 不校验载荷长度。这里保持一致：只要 CRC 通过且功能码为 0x10 就算回执。
+  /// （若按 Modbus 惯例要求载荷 ≥5B，某些只回显 4B 的固件会导致写入被误判失败。）
   static bool parseWriteMultiAck(List<int> frameData) {
-    final plen = validate(frameData);
-    if (plen < 5 || frameData[1] != funcWriteMulti) return false;
-    return true;
+    if (validate(frameData) < 0) return false;
+    return frameData[1] == funcWriteMulti;
   }
 
-  /// 解析 0x06 写单寄存器回执：Modbus 惯例回显完整请求帧（A5 06 regHi regLo valHi valLo crc）。
-  /// 合法回执返回 true。
+  /// 解析 0x06 写单寄存器回执：Modbus 惯例回显完整请求帧
+  /// （A5 06 regHi regLo valHi valLo crc），但同样只要求 CRC + 功能码匹配。
   static bool parseWriteSingleAck(List<int> frameData) {
-    final plen = validate(frameData);
-    if (plen != 5 || frameData[1] != funcWriteSingle) return false;
-    return true;
+    if (validate(frameData) < 0) return false;
+    return frameData[1] == funcWriteSingle;
   }
 
   /// 检测异常响应帧（func|0x80）。返回异常码；非异常帧返回 null。
+  ///
+  /// 异常帧固定 5B：`A5 <func|0x80> <errCode> <crcLo> <crcHi>`，
+  /// 即载荷长度 plen == 1。原先写成 `plen != 2` 会让所有异常帧都解析失败，
+  /// 从机繁忙（0x06）自动重发因此永远不会触发。
   static int? parseException(List<int> frameData) {
     final plen = validate(frameData);
-    if (plen != 2) return null;
+    if (plen < 1) return null;
     final func = frameData[1];
     if ((func & 0x80) == 0) return null;
     return frameData[2] & 0xFF;

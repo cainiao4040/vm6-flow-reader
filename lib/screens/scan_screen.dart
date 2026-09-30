@@ -25,12 +25,27 @@ class _ScanScreenState extends State<ScanScreen> {
     _ble.deviceStream.listen((d) {
       if (!mounted) return;
       setState(() {
-        if (!_devices.any((e) => e.id == d.id)) {
+        final i = _devices.indexWhere((e) => e.id == d.id);
+        if (i < 0) {
           _devices.add(d);
+        } else {
+          _devices[i] = d; // 刷新 RSSI
         }
       });
     });
     _requestPermissionsAndStartScan();
+  }
+
+  /// 表具（VM 开头）置顶，其余按信号强度降序。
+  List<DiscoveredDevice> get _sorted {
+    final list = [..._devices];
+    list.sort((a, b) {
+      final av = BleService.isVm6Device(a.name);
+      final bv = BleService.isVm6Device(b.name);
+      if (av != bv) return av ? -1 : 1;
+      return b.rssi.compareTo(a.rssi);
+    });
+    return list;
   }
 
   Future<void> _requestPermissionsAndStartScan() async {
@@ -85,7 +100,7 @@ class _ScanScreenState extends State<ScanScreen> {
             child: Row(
               children: [
                 const Expanded(
-                  child: Text('附近 VM / VMS 系列表具：'),
+                  child: Text('附近蓝牙设备（VM 系列表具置顶）：'),
                 ),
                 TextButton.icon(
                   onPressed: () {
@@ -114,12 +129,34 @@ class _ScanScreenState extends State<ScanScreen> {
           else
             Expanded(
               child: ListView.builder(
-                itemCount: _devices.length,
+                itemCount: _sorted.length,
                 itemBuilder: (context, i) {
-                  final d = _devices[i];
+                  final d = _sorted[i];
+                  final isMeter = BleService.isVm6Device(d.name);
                   return ListTile(
-                    leading: const Icon(Icons.bluetooth_searching),
-                    title: Text(d.name.isEmpty ? '(未命名设备)' : d.name),
+                    leading: Icon(
+                      isMeter
+                          ? Icons.speed
+                          : Icons.bluetooth_searching,
+                      color: isMeter ? Colors.teal : null,
+                    ),
+                    title: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            d.name.isEmpty ? '(未命名设备)' : d.name,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isMeter)
+                          const Padding(
+                            padding: EdgeInsets.only(left: 6),
+                            child: Text('表具',
+                                style: TextStyle(
+                                    fontSize: 11, color: Colors.teal)),
+                          ),
+                      ],
+                    ),
                     subtitle: Text(
                       '${d.id}\nRSSI: ${d.rssi.toString()}',
                       style: const TextStyle(fontSize: 12),
