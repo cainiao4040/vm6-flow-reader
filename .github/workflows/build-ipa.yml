@@ -1,0 +1,126 @@
+name: Build iOS IPA (unsigned)
+
+# Builds the app on a GitHub-hosted macOS runner and publishes two IPAs as
+# downloadable artifacts. No Apple Developer account, no signing certificate and
+# no third-party CI signup are required:
+#
+#   vm6_flow_reader-unsigned.ipa  -> AppSync Unified / AltStore / Sideloadly
+#   vm6_flow_reader-adhoc.ipa     -> TrollStore
+#
+# Download: Actions -> this run -> Artifacts (bottom of the run page).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    name: vm6_flow_reader IPA
+    # If macos-15 ever becomes unavailable, change this to macos-14.
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.29.3
+          channel: stable
+          cache: true
+
+      - name: Toolchain versions
+        run: |
+          flutter --version
+          xcodebuild -version
+          pod --version
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Fast gates: both are known to pass on this toolchain.
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      # --no-codesign produces an unsigned build/ios/iphoneos/Runner.app.
+      # Flutter runs `pod install` itself (ios/Podfile is committed).
+      - name: Build (release, unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Verify app bundle
+        run: |
+          set -e
+          APP=build/ios/iphoneos/Runner.app
+          test -d "$APP" || { echo "::error::Runner.app was not produced"; exit 1; }
+          echo "--- bundle ---"
+          ls -la "$APP"
+          echo "--- architectures ---"
+          lipo -info "$APP/Runner"
+          echo "--- Info.plist ---"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$APP/Info.plist"
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          rm -rf build/ios/ipa
+          mkdir -p build/ios/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa/Payload/Runner.app
+          chmod +x build/ios/ipa/Payload/Runner.app/Runner
+          # leave a clean unsigned bundle for AppSync / re-signing tools
+          rm -rf build/ios/ipa/Payload/Runner.app/_CodeSignature
+          (cd build/ios/ipa && zip -qry vm6_flow_reader-unsigned.ipa Payload)
+          echo "unsigned: $(du -h build/ios/ipa/vm6_flow_reader-unsigned.ipa | cut -f1)"
+
+      - name: Ad-hoc sign and package IPA
+        run: |
+          set -e
+          codesign --force --sign - --timestamp=none build/ios/ipa/Payload/Runner.app
+          codesign --verify --verbose=2 build/ios/ipa/Payload/Runner.app || true
+          (cd build/ios/ipa && zip -qry vm6_flow_reader-adhoc.ipa Payload)
+          echo "ad-hoc: $(du -h build/ios/ipa/vm6_flow_reader-adhoc.ipa | cut -f1)"
+          ls -lh build/ios/ipa/*.ipa
+
+      - name: Verify IPA contents
+        run: |
+          set -e
+          cd build/ios/ipa
+          for f in vm6_flow_reader-unsigned.ipa vm6_flow_reader-adhoc.ipa; do
+            echo "=== $f ==="
+            unzip -l "$f" | head -15
+          done
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## vm6_flow_reader iOS 构建结果"
+            echo ""
+            if [ -f build/ios/ipa/vm6_flow_reader-unsigned.ipa ]; then
+              echo "| 文件 | 大小 | 用途 |"
+              echo "| --- | --- | --- |"
+              echo "| \`vm6_flow_reader-adhoc.ipa\` | $(du -h build/ios/ipa/vm6_flow_reader-adhoc.ipa 2>/dev/null | cut -f1) | TrollStore |"
+              echo "| \`vm6_flow_reader-unsigned.ipa\` | $(du -h build/ios/ipa/vm6_flow_reader-unsigned.ipa 2>/dev/null | cut -f1) | AppSync Unified / 重签 |"
+              echo ""
+              echo "在本次运行页面底部 **Artifacts** 处下载。"
+            else
+              echo "构建失败，未生成 IPA。请查看上方日志。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm6_flow_reader-ipa
+          path: build/ios/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 90
